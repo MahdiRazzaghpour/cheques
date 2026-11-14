@@ -110,7 +110,8 @@ h1.large { font-size: 34px; font-weight: 700; margin: 0 16px 8px; letter-spacing
 .seg { display: flex; background: var(--fill); border-radius: 9px; padding: 2px; margin: 10px 16px; }
 .seg button { flex: 1; padding: 6px; border-radius: 7px; font-size: 14px; }
 .seg button.on { background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); font-weight: 600; }
-.toggle { width: 51px; height: 31px; flex: none; -webkit-appearance: none; appearance: none; background: var(--fill); border-radius: 16px; position: relative; transition: background 0.2s; }
+.toggle, .field input.toggle { width: 51px; height: 31px; flex: none; padding: 0; -webkit-appearance: none; appearance: none; background: var(--fill); border-radius: 16px; position: relative; transition: background 0.2s; cursor: pointer; }
+.field input.toggle:checked { background: var(--green); }
 .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); transition: transform 0.2s; }
 .toggle:checked { background: var(--green); }
 .toggle:checked::after { transform: translateX(20px); }
