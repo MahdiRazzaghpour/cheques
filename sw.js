@@ -1,6 +1,6 @@
 // Offline: the app's own files are cached, so it opens without internet once installed.
 // Bump VERSION whenever any file changes, so phones pick up the new version.
-const VERSION = 'cheques-v5';
+const VERSION = 'cheques-v6';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/core.js', './js/store.js', './js/demo.js',

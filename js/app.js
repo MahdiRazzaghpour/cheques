@@ -359,7 +359,9 @@ function settingsView(k) {
     + `<div class="row link" role="button" data-act="push" data-route="holidays"><div class="grow">Bank holidays</div><div class="value">${k.L.holidays.length}</div></div>`,
   'Reminders and transfer deadlines move to the last day banks are open.');
   html += group('Install', `<div class="row stack"><div>${isStandalone() ? '✓ Installed on the Home Screen' : 'Not installed yet'}</div>
-    <div class="sub">On iPhone: open this page in Safari, tap Share, then Add to Home Screen.</div></div>`);
+    <div class="sub">On iPhone: open this page in Safari, tap Share, then Add to Home Screen.</div></div>
+    <div class="row"><div class="grow">Version</div><div class="value" id="app-version">…</div></div>`,
+  'Updates arrive by themselves: open the app with internet on. If a change does not show, close the app fully and open it again.');
   return html;
 }
 
@@ -543,6 +545,14 @@ function render({ keepScroll = true } = {}) {
     window.scrollTo(0, y);
   }
   if (state.modal?.kind === 'cheque') updateSayadNote();
+  const versionCell = document.getElementById('app-version');
+  // The offline cache is named after the version (sw.js VERSION), so this shows which version the phone really has.
+  if (versionCell && window.caches) {
+    caches.keys().then(keys => {
+      const v = keys.filter(key => key.startsWith('cheques-v')).map(key => +key.slice(9)).sort((a, b) => b - a)[0];
+      versionCell.textContent = v ? String(v) : 'not saved for offline yet';
+    });
+  }
 }
 
 function updateSayadNote() {
