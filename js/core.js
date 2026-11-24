@@ -185,6 +185,23 @@ export function editableMoney(rials, preferred) {
 export const STATUSES = ['open', 'cleared', 'bounced', 'cancelled'];
 export const STATUS_LABEL = { open: 'Open', cleared: 'Cleared', bounced: 'Bounced', cancelled: 'Cancelled' };
 export const isOutstanding = status => status === 'open' || status === 'bounced';
+
+/// The part of a cheque someone else pays (a purchase shared with the other pharmacy, say). The account still has to
+/// hold the full amount; this only says how much of it should come from them.
+export const sharePart = c => (c.shareAmountRials > 0 ? c.shareAmountRials : 0);
+export const shareOwed = c => (isOutstanding(c.status) && !c.shareReceived ? sharePart(c) : 0);
+
+/// Unpaid shares added up per person, e.g. Map { 'Shadi' => 200000000 }.
+export function owedByName(cheques) {
+  const byName = new Map();
+  for (const c of cheques) {
+    const owed = shareOwed(c);
+    if (!owed) continue;
+    const name = (c.shareName || '').trim() || 'Someone';
+    byName.set(name, (byName.get(name) || 0) + owed);
+  }
+  return byName;
+}
 export const ENTRY_KINDS = ['bankBalance', 'deposit'];
 export const ENTRY_LABEL = { bankBalance: 'Balance from bank', deposit: 'Deposit' };
 
@@ -270,6 +287,7 @@ export function summarize(account, entries, cheques, today, horizonDays, bank) {
   else if (totalShortfall > 0) status = 'coveredForHorizon';
   return {
     account, balance, outstanding, cover, horizonEnd, shortfallInHorizon, totalShortfall, firstGap,
+    owedInHorizon: owedByName(inHorizon),
     outstandingTotal: outstanding.reduce((s, c) => s + c.amountRials, 0),
     overdue: outstanding.filter(c => c.status === 'bounced' || Day.parse(c.due).key < today.key),
     transferBy: firstGap ? transferDeadline(Day.parse(firstGap.due), today, bank) : null,
@@ -343,6 +361,8 @@ function makeReminder(account, day, kinds, byId, cover, balance, s, bank, unit) 
   const upcoming = items.filter(i => i.kind !== 'overdue').map(i => i.cheque);
   if (overdue.length) lines.push(`${overdue.every(c => c.status === 'bounced') ? 'Bounced' : 'Past due'}: ${describe(overdue, unit)}.`);
   if (upcoming.length) lines.push(`Due ${dueRange(upcoming)}: ${describe(upcoming, unit)}.`);
+  const owed = owedByName(items.map(i => i.cheque));
+  if (owed.size) lines.push(`Of this, ${[...owed].map(([name, amount]) => `⁨${name}⁩ still owes ${money(amount, unit)}`).join(' and ')}.`);
   let title;
   if (shortfall > 0) {
     const amount = money(shortfall, unit);
@@ -405,29 +425,48 @@ export function monthRows(month, cheques, pharmacyIDs, bank) {
       else unassigned.push(c);
     }
     const total = list.reduce((s, c) => s + c.amountRials, 0);
-    return { day, bankOpen: bank.isOpen(day), sections, unassigned, total };
+    const open = list.filter(c => isOutstanding(c.status)).reduce((s, c) => s + c.amountRials, 0);
+    return { day, bankOpen: bank.isOpen(day), sections, unassigned, total, open };
   });
 }
 
-export function periodPlan(period, accountsData) {
-  const dueByPharmacy = new Map();
+/// `pharmacies` lets a share named after a pharmacy ("Pharmacy 2") count under that pharmacy.
+export function periodPlan(period, accountsData, pharmacies = []) {
+  const toPayByPharmacy = new Map();
+  const addTo = (id, amount) => toPayByPharmacy.set(id || null, (toPayByPharmacy.get(id || null) || 0) + amount);
+  const pharmacyByName = new Map(pharmacies.map(p => [(p.name || '').trim().toLowerCase(), p.id]));
+  const owedByEnd = new Map();
   const rows = accountsData.map(({ account, entries, cheques }) => {
     const balance = balanceOf(entries, cheques);
     const inPeriod = cheques.filter(c => c.status !== 'cancelled' && period.contains(Day.parse(c.due)));
-    for (const c of inPeriod) dueByPharmacy.set(c.pharmacyID || null, (dueByPharmacy.get(c.pharmacyID || null) || 0) + c.amountRials);
-    const required = cheques.filter(c => isOutstanding(c.status) && Day.parse(c.due).key <= period.end.key)
-      .reduce((s, c) => s + c.amountRials, 0);
+    for (const c of inPeriod.filter(x => isOutstanding(x.status))) {
+      const otherPharmacy = pharmacyByName.get((c.shareName || '').trim().toLowerCase());
+      const moved = otherPharmacy && otherPharmacy !== c.pharmacyID ? sharePart(c) : 0;
+      addTo(c.pharmacyID, c.amountRials - moved);
+      if (moved) addTo(otherPharmacy, moved);
+    }
+    const dueByEnd = cheques.filter(c => isOutstanding(c.status) && Day.parse(c.due).key <= period.end.key);
+    const required = dueByEnd.reduce((s, c) => s + c.amountRials, 0);
+    for (const [name, amount] of owedByName(dueByEnd)) owedByEnd.set(name, (owedByEnd.get(name) || 0) + amount);
+    const sumOf = list => list.reduce((s, c) => s + c.amountRials, 0);
     return {
       account, chequeCount: inPeriod.length,
-      dueInPeriod: inPeriod.reduce((s, c) => s + c.amountRials, 0),
-      stillOpenInPeriod: inPeriod.filter(c => isOutstanding(c.status)).reduce((s, c) => s + c.amountRials, 0),
+      dueInPeriod: sumOf(inPeriod),
+      stillOpenInPeriod: sumOf(inPeriod.filter(c => isOutstanding(c.status))),
+      openCount: inPeriod.filter(c => isOutstanding(c.status)).length,
+      cashedInPeriod: sumOf(inPeriod.filter(c => c.status === 'cleared')),
+      owedByEnd: owedByName(dueByEnd),
       requiredByEnd: required, available: balance.available,
       transferByEnd: Math.max(0, required - balance.available),
     };
   });
   const sum = key => rows.reduce((s, r) => s + r[key], 0);
   // Per-account shortfalls added up: spare money in one account does not pay another account's cheques.
-  return { period, rows, dueByPharmacy, totalDue: sum('dueInPeriod'), totalRequired: sum('requiredByEnd'), totalTransfer: sum('transferByEnd') };
+  return {
+    period, rows, toPayByPharmacy, owedByEnd,
+    totalDue: sum('dueInPeriod'), totalStillToPay: sum('stillOpenInPeriod'), totalCashed: sum('cashedInPeriod'),
+    totalRequired: sum('requiredByEnd'), totalTransfer: sum('transferByEnd'),
+  };
 }
 
 export function pharmacyTotals(cheques, today, horizonDays) {
@@ -511,6 +550,10 @@ export function validateBackup(data) {
     if (!Day.parse(c.due)) fail(`a cheque has an impossible due date ${c.due}`);
     if (!STATUSES.includes(c.status)) fail(`a cheque has an unknown status ${c.status}`);
     if (!Number.isSafeInteger(c.amountRials)) fail('a cheque has an impossible amount');
+    if (c.shareAmountRials != null && c.shareAmountRials !== 0
+      && (!Number.isSafeInteger(c.shareAmountRials) || c.shareAmountRials < 0 || c.shareAmountRials >= c.amountRials)) {
+      fail(`a cheque to ${c.recipient} has a shared part that is not less than the cheque`);
+    }
   }
   for (const e of data.entries) {
     if (!accountIDs.has(e.accountID)) fail('a balance entry points at a missing account');
@@ -535,9 +578,12 @@ export function chequesCSV(ledger) {
   const rows = [...ledger.cheques].sort(chequeOrder).map(c => {
     const a = accounts.get(c.accountID) || {};
     const due = Day.parse(c.due);
-    return [digitsAsText(c.sayadID), due.numeric, due.gregorianISO, c.amountRials, c.status, a.bank, digitsAsText(a.number), a.owner, pharmacies.get(c.pharmacyID) || '', c.recipient, c.note];
+    const share = sharePart(c);
+    return [digitsAsText(c.sayadID), due.numeric, due.gregorianISO, c.amountRials, c.status, a.bank, digitsAsText(a.number), a.owner,
+      pharmacies.get(c.pharmacyID) || '', c.recipient, share ? c.shareName : '', share || '', share ? (c.shareReceived ? 'yes' : 'no') : '', c.note];
   });
-  return csvDocument(['sayad_id', 'due_jalali', 'due_gregorian', 'amount_rials', 'status', 'bank', 'account_number', 'owner', 'pharmacy', 'payee', 'note'], rows);
+  return csvDocument(['sayad_id', 'due_jalali', 'due_gregorian', 'amount_rials', 'status', 'bank', 'account_number', 'owner', 'pharmacy', 'payee',
+    'shared_with', 'shared_part_rials', 'shared_part_paid', 'note'], rows);
 }
 
 export function balancesCSV(ledger) {

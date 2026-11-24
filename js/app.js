@@ -92,7 +92,8 @@ function chequeRow(k, c, { showAccount = true } = {}) {
   return `<div class="row" role="button" data-act="edit-cheque" data-id="${esc(c.id)}">
     <span class="stripe" style="background:${C.colorOf(account)}"></span>
     <div class="grow"><div dir="auto" style="${c.status === 'cancelled' ? 'text-decoration:line-through' : ''}">${esc(c.recipient || 'No recipient')}</div>
-      <div class="sub">${esc(where)}</div>${c.sayadID ? `<div class="sub num">Sayad ${esc(c.sayadID)}</div>` : ''}</div>
+      <div class="sub">${esc(where)}</div>${c.sayadID ? `<div class="sub num">Sayad ${esc(c.sayadID)}</div>` : ''}
+      ${C.sharePart(c) ? `<div class="sub"><bdi>${esc(c.shareName || 'Someone')}</bdi> pays ${esc(k.money(C.sharePart(c)))} · ${c.shareReceived ? '<span class="green">paid in ✓</span>' : '<span class="orange">not paid in yet</span>'}</div>` : ''}</div>
     <div style="text-align:right"><div class="num">${esc(k.money(c.amountRials))}</div>
       <div class="sub">${esc(due.formattedShort)} · ${esc(due.relative(k.today))}</div>
       <span class="pill" style="color:${color};background:color-mix(in srgb, ${color} 15%, transparent)">${esc(label)}</span></div></div>`;
@@ -122,7 +123,13 @@ function statusLines(k, s) {
   if ((s.status === 'covered' || s.status === 'coveredForHorizon') && dueSoon && stale) {
     html += '<div class="sub orange">Balance is over 2 days old and a cheque is due soon. Confirm it.</div>';
   }
-  return html;
+  return html + owedLine(k, s.owedInHorizon);
+}
+
+/// "Shadi still owes 200,000,000 IRR of these cheques": shared parts not paid in yet.
+function owedLine(k, owed) {
+  if (!owed || !owed.size) return '';
+  return `<div class="sub orange">${[...owed].map(([name, amount]) => `<bdi>${esc(name)}</bdi> still owes ${esc(k.money(amount))}`).join(' · ')} of these cheques</div>`;
 }
 
 function transferLine(k, amount, by) {
@@ -177,9 +184,11 @@ function overview(k) {
   }
   const month = C.Period.monthOf(k.today), quarter = C.Period.quarterOf(k.today);
   const planRow = (label, period) => {
-    const p = C.periodPlan(period, k.data);
+    const p = C.periodPlan(period, k.data, k.L.pharmacies);
     return `<div class="row link stack" role="button" data-act="push" data-route="plan" data-period="${period.kind}:${period.y}:${period.n}">
-      <div class="bold">${esc(label)} · ${esc(period.title)}</div><div class="sub">${esc(k.money(p.totalDue))} due</div>${transferLine(k, p.totalTransfer, period.end)}</div>`;
+      <div class="bold">${esc(label)} · ${esc(period.title)}</div>
+      <div class="sub">${esc(k.money(p.totalStillToPay))} still to pay${p.totalCashed ? ` · ${esc(k.money(p.totalCashed))} cashed` : ''}</div>
+      ${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd)}</div>`;
   };
   html += group('Plan', planRow('This month', month) + planRow('This quarter', quarter));
   html += group('Accounts', k.accounts.map(a => {
@@ -211,9 +220,10 @@ function monthView(k) {
     title: state.month.title,
     right: `${isCurrent ? '' : '<button class="tb-btn" data-act="month-today">Today</button>'}<button class="tb-btn" data-act="push" data-route="search" aria-label="Search">${ICON.search}</button>`,
   });
-  const total = rows.reduce((s, r) => s + r.total, 0);
+  const open = rows.reduce((s, r) => s + r.open, 0);
+  const cashed = rows.reduce((s, r) => s + r.total - r.open, 0);
   html += `<div class="sheet-head" style="${grid}"><div>Day</div>${pharmacies.length ? pharmacies.map(p => `<div>${esc(p.name)}</div>`).join('') : '<div>Cheques</div>'}
-    <div class="sheet-total">Month total ${esc(k.money(total))}</div></div>`;
+    <div class="sheet-total">Still to pay ${esc(k.money(open))}${cashed ? ` · cashed ${esc(k.money(cashed))}` : ''}</div></div>`;
   const chip = c => {
     const account = k.account(c.accountID);
     const hex = C.colorOf(account);
@@ -224,7 +234,8 @@ function monthView(k) {
     else if (c.status === 'open' && cv && !cv.covered) mark = '<span class="mark red">●</span>';
     return `<button class="chip ${c.status === 'cleared' ? 'cleared' : ''}" data-act="edit-cheque" data-id="${esc(c.id)}" style="background:${hex}26">
       <span class="stripe" style="background:${hex}"></span><span class="grow"><span class="who" dir="auto">${esc(c.recipient || '—')}</span>
-      <span class="amt">${esc(C.moneyNumber(c.amountRials, k.unit))}</span></span>${mark}</button>`;
+      <span class="amt">${esc(C.moneyNumber(c.amountRials, k.unit))}</span>
+      ${C.sharePart(c) ? `<span class="share"><bdi>${esc(c.shareName || 'Someone')}</bdi>: ${esc(C.moneyNumber(C.sharePart(c), k.unit))}${c.shareReceived ? ' ✓' : ''}</span>` : ''}</span>${mark}</button>`;
   };
   const add = (day, pharmacyID) => `<button class="add" data-act="new-cheque" data-due="${day.numeric}" data-pharmacy="${esc(pharmacyID || '')}" aria-label="Add cheque on ${day.formatted}">+</button>`;
   for (const r of rows) {
@@ -265,22 +276,25 @@ function searchResults(k) {
 
 function planView(k, route) {
   const period = route.period;
-  const p = C.periodPlan(period, k.data);
+  const p = C.periodPlan(period, k.data, k.L.pharmacies);
   let html = topbar({ back: true, title: period.isQuarter ? 'Quarter plan' : 'Month plan' });
   html += `<div class="seg"><button class="${period.isQuarter ? '' : 'on'}" data-act="plan-kind" data-kind="month">Month</button><button class="${period.isQuarter ? 'on' : ''}" data-act="plan-kind" data-kind="quarter">Quarter</button></div>`;
   html += group('', `<div class="row"><button class="tb-btn" data-act="plan-step" data-step="-1">${ICON.left}</button>
     <div class="grow" style="text-align:center"><div class="bold">${esc(period.title)}</div><div class="sub">${esc(period.start.formattedShort)} – ${esc(period.end.formatted)}</div></div>
     <button class="tb-btn" data-act="plan-step" data-step="1">${ICON.right}</button></div>`);
-  html += group('', `<div class="row"><div class="grow">Cheques due</div><div class="value num">${esc(k.money(p.totalDue))}</div></div>
-    <div class="row">${transferLine(k, p.totalTransfer, period.end)}</div>`,
-  `Transfer covers every uncashed cheque due by ${esc(period.end.formatted)}, including earlier ones, per account.`);
+  html += group('', `<div class="row"><div class="grow bold">Still to pay</div><div class="value num">${esc(k.money(p.totalStillToPay))}</div></div>
+    ${p.totalCashed ? `<div class="row"><div class="grow">Cashed so far</div><div class="value num">${esc(k.money(p.totalCashed))}</div></div>` : ''}
+    <div class="row stack">${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd)}</div>`,
+  `Cheques marked Cleared drop out of “still to pay”; keep them, don't delete them. Transfer covers every uncashed cheque due by ${esc(period.end.formatted)}, including earlier ones, per account.`);
   html += group('Accounts', p.rows.map(r => `<div class="row"><span class="stripe" style="background:${C.colorOf(r.account)}"></span>
     <div class="grow"><div class="bold">${esc(C.accountName(r.account))}</div>
-    <div class="sub">${r.chequeCount} cheque${r.chequeCount === 1 ? '' : 's'} due · ${esc(k.money(r.dueInPeriod))}</div>${transferLine(k, r.transferByEnd, period.end)}</div></div>`).join('') || '<div class="row sub">No accounts</div>');
+    <div class="sub">${r.openCount} to pay · ${esc(k.money(r.stillOpenInPeriod))}${r.cashedInPeriod ? ` · ${esc(k.money(r.cashedInPeriod))} cashed` : ''}</div>
+    ${transferLine(k, r.transferByEnd, period.end)}${owedLine(k, r.owedByEnd)}</div></div>`).join('') || '<div class="row sub">No accounts</div>');
   if (k.L.pharmacies.length) {
-    const loose = p.dueByPharmacy.get(null);
-    html += group('Due by pharmacy', k.L.pharmacies.map(ph => `<div class="row"><div class="grow">${esc(ph.name)}</div><div class="value num">${esc(k.money(p.dueByPharmacy.get(ph.id) || 0))}</div></div>`).join('')
-      + (loose ? `<div class="row"><div class="grow">No pharmacy</div><div class="value num">${esc(k.money(loose))}</div></div>` : ''));
+    const loose = p.toPayByPharmacy.get(null);
+    html += group('Still to pay by pharmacy', k.L.pharmacies.map(ph => `<div class="row"><div class="grow">${esc(ph.name)}</div><div class="value num">${esc(k.money(p.toPayByPharmacy.get(ph.id) || 0))}</div></div>`).join('')
+      + (loose ? `<div class="row"><div class="grow">No pharmacy</div><div class="value num">${esc(k.money(loose))}</div></div>` : ''),
+    'A shared part named after a pharmacy counts under that pharmacy.');
   }
   return html;
 }
@@ -426,12 +440,28 @@ function chequeModal(k, m) {
     <datalist id="recipients">${recent.map(r => `<option value="${esc(r)}">`).join('')}</datalist>`)
   + group('', amountField('Amount', c?.amountRials ?? null, k.unit) + `<div class="field"><label>Due date</label>${datePicker('due', due)}</div>`,
     `<span id="due-note">${esc(dueNote(k, due))}</span>`)
+  + shareSection(k, c)
   + group('', `<div class="field"><label>Sayad ID</label><input name="sayad" inputmode="numeric" placeholder="16 digits" value="${esc(c?.sayadID || '')}" class="num" data-sayad></div>`,
     `<span id="sayad-note" class="orange"></span>`)
   + (c ? group('', `<div class="field"><label>Status</label><select name="status">${C.STATUSES.map(s => `<option value="${s}" ${s === c.status ? 'selected' : ''}>${C.STATUS_LABEL[s]}</option>`).join('')}</select></div>`,
     'Mark Cleared once it is cashed. Bounced cheques stay counted against the balance until cleared or cancelled.') : '')
   + group('', `<div class="field full"><textarea name="note" dir="auto" placeholder="Note">${esc(c?.note || '')}</textarea></div>`);
   return modalShell(c ? 'Edit cheque' : 'New cheque', body, { canDelete: !!c });
+}
+
+/// A cheque paid together with someone else (e.g. the other pharmacy): the full amount stays on the cheque,
+/// their part is recorded here, and "paid in" adds their money to the account as a deposit.
+function shareSection(k, c) {
+  const share = c ? C.sharePart(c) : 0;
+  const unit = c ? C.editableMoney(c.amountRials, k.unit).unit : k.unit;
+  const shareText = share ? String(unit === 'toman' ? share / 10 : share) : '';
+  const names = [...new Set([...k.L.cheques.map(x => (x.shareName || '').trim()), ...k.L.pharmacies.map(p => p.name)].filter(Boolean))];
+  return group('Shared cost', `<div class="field"><label>Part paid by</label><input name="shareName" dir="auto" list="share-names" placeholder="Nobody" value="${esc(share ? c.shareName : '')}"></div>
+    <datalist id="share-names">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="field"><label>Their part</label><input name="shareAmount" inputmode="numeric" class="num" placeholder="0" value="${esc(shareText)}" data-share></div>
+    <div class="amount-preview sub num" id="share-preview"></div>
+    <label class="field"><span style="flex:1">They have paid it in</span><input type="checkbox" class="toggle" name="shareReceived" ${c?.shareReceived ? 'checked' : ''}></label>`,
+  'For a cheque shared with someone, e.g. Shadi or the other pharmacy. Enter the <b>full cheque</b> as Amount: the account still needs all of it. Their part uses the same unit as Amount. Turn on “paid in” when their money reaches this account; it is added to the balance.');
 }
 
 function accountModal(k, m) {
@@ -639,11 +669,37 @@ const ACTIONS = {
   },
 };
 
+/// When someone's shared part is paid in, it is a deposit on the cheque's account. Kept in step with the cheque:
+/// added when ticked, updated if the amount or account changes, removed if unticked.
+function syncShareDeposit(L, c) {
+  const existing = c.shareDepositID ? L.entries.find(e => e.id === c.shareDepositID) : null;
+  if (!c.shareReceived) {
+    if (existing) L.entries = L.entries.filter(e => e.id !== existing.id);
+    c.shareDepositID = null;
+    return;
+  }
+  const fields = { accountID: c.accountID, kind: 'deposit', amountRials: c.shareAmountRials, note: `${c.shareName}'s part of the cheque to ${c.recipient || 'a supplier'}` };
+  if (existing) {
+    Object.assign(existing, fields);
+  } else {
+    const entry = { id: uid(), ...fields, enteredAt: nowISO(), enteredBy: store.settings.userName };
+    L.entries.push(entry);
+    c.shareDepositID = entry.id;
+  }
+}
+
 const SAVE = {
   cheque(f) {
     const amount = C.parseMoney(f.amount.value, f.unit.value);
     if (!f.account.value) { alert('Choose the account this cheque is drawn on.'); return; }
     if (!amount) { alert('Enter the amount in digits.'); return; }
+    const shareName = f.shareName.value.trim();
+    const shareText = f.shareAmount.value.trim();
+    const share = shareText ? C.parseMoney(shareText, f.unit.value) : 0;
+    if (share == null) { alert('Enter their part in digits.'); return; }
+    if (share && !shareName) { alert('Who pays that part? Enter a name, e.g. Shadi.'); return; }
+    if (shareName && !share) { alert(`Enter how much ${shareName} pays.`); return; }
+    if (share >= amount) { alert('Their part must be less than the full cheque amount.'); return; }
     const due = readDate(f, 'due');
     const L = store.ledger;
     let c = state.modal.id ? L.cheques.find(x => x.id === state.modal.id) : null;
@@ -657,7 +713,9 @@ const SAVE = {
     Object.assign(c, {
       accountID: f.account.value, pharmacyID: f.pharmacy.value || null, recipient: f.recipient.value.trim(),
       amountRials: amount, due: due.numeric, sayadID: C.sayadDigits(f.sayad.value), note: f.note.value.trim(),
+      shareName: share ? shareName : '', shareAmountRials: share || 0, shareReceived: !!share && f.shareReceived.checked,
     });
+    syncShareDeposit(L, c);
     persistAndRender();
   },
   account(f) {
@@ -729,9 +787,16 @@ document.addEventListener('input', event => {
   } else if (t.id === 'search') {
     state.search = t.value;
     document.getElementById('search-results').innerHTML = searchResults(calc());
-  } else if (t.dataset.amount !== undefined) {
+  } else if (t.dataset.amount !== undefined || t.dataset.share !== undefined) {
     const f = t.form;
     document.getElementById('amount-preview').innerHTML = amountPreview(f.amount.value, f.unit.value);
+    const sharePreview = document.getElementById('share-preview');
+    if (sharePreview && f.shareAmount) {
+      const share = C.parseMoney(f.shareAmount.value, f.unit.value);
+      const total = C.parseMoney(f.amount.value, f.unit.value);
+      sharePreview.innerHTML = !f.shareAmount.value ? '' : share == null ? '<span class="red">Digits only</span>'
+        : `${esc(C.money(share, 'rial'))}${total && share < total ? ` · your part ${esc(C.money(total - share, 'rial'))}` : ''}`;
+    }
   } else if (t.dataset.sayad !== undefined) {
     updateSayadNote();
   }
