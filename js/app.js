@@ -222,8 +222,12 @@ function monthView(k) {
   });
   const open = rows.reduce((s, r) => s + r.open, 0);
   const cashed = rows.reduce((s, r) => s + r.total - r.open, 0);
+  // Cashed cheques leave the sheet unless asked for: they no longer need money, and they stay in the records.
+  const visible = list => (k.S.showCashed ? list : list.filter(c => c.status !== 'cleared'));
+  const cashedCount = rows.reduce((s, r) => s + [...r.sections.flat(), ...r.unassigned].filter(c => c.status === 'cleared').length, 0);
   html += `<div class="sheet-head" style="${grid}"><div>Day</div>${pharmacies.length ? pharmacies.map(p => `<div>${esc(p.name)}</div>`).join('') : '<div>Cheques</div>'}
-    <div class="sheet-total">Still to pay ${esc(k.money(open))}${cashed ? ` · cashed ${esc(k.money(cashed))}` : ''}</div></div>`;
+    <div class="sheet-total">Still to pay ${esc(k.money(open))}${cashed ? ` · cashed ${esc(k.money(cashed))}` : ''}
+      ${cashedCount ? `<button class="sheet-toggle" data-act="toggle-cashed">${k.S.showCashed ? 'Hide cashed' : `Show cashed (${cashedCount})`}</button>` : ''}</div></div>`;
   const chip = c => {
     const account = k.account(c.accountID);
     const hex = C.colorOf(account);
@@ -241,9 +245,9 @@ function monthView(k) {
   for (const r of rows) {
     const label = `<div class="day-label ${r.bankOpen ? '' : 'closed'}"><b>${r.day.d}</b><span>${C.WEEKDAYS[r.day.weekday]}</span></div>`;
     let cells;
-    if (pharmacies.length) cells = r.sections.map((list, i) => `<div class="cell">${list.map(chip).join('')}${add(r.day, pharmacies[i].id)}</div>`).join('');
-    else cells = `<div class="cell">${r.unassigned.map(chip).join('')}${add(r.day, null)}</div>`;
-    const loose = pharmacies.length && r.unassigned.length ? `<div class="cell loose"><div class="sub">No pharmacy</div>${r.unassigned.map(chip).join('')}</div>` : '';
+    if (pharmacies.length) cells = r.sections.map((list, i) => `<div class="cell">${visible(list).map(chip).join('')}${add(r.day, pharmacies[i].id)}</div>`).join('');
+    else cells = `<div class="cell">${visible(r.unassigned).map(chip).join('')}${add(r.day, null)}</div>`;
+    const loose = pharmacies.length && visible(r.unassigned).length ? `<div class="cell loose"><div class="sub">No pharmacy</div>${visible(r.unassigned).map(chip).join('')}</div>` : '';
     html += `<div class="day-row ${r.day.equals(k.today) ? 'today' : ''}" id="d-${r.day.key}" style="${grid}">${label}${cells}${loose}</div>`;
   }
   return html;
@@ -587,6 +591,7 @@ const ACTIONS = {
   'month-prev'() { state.month = state.month.add(-1); render(); },
   'month-next'() { state.month = state.month.add(1); render(); },
   'month-today'() { state.month = C.Month.of(C.Day.today()); render(); },
+  'toggle-cashed'() { store.settings.showCashed = !store.settings.showCashed; store.saveSettings(); render(); },
   filter(el) { state.filter = el.dataset.filter; render(); },
   'plan-kind'(el) {
     const route = currentRoute();

@@ -74,6 +74,7 @@ h1.large { font-size: 34px; font-weight: 700; margin: 0 16px 8px; letter-spacing
   display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--sub); text-align: center;
 }
 .sheet-total { grid-column: 1 / -1; font-weight: 400; font-size: 12px; }
+.sheet-toggle { color: var(--accent); font-size: 12px; font-weight: 600; margin-left: 6px; }
 .day-row { display: grid; gap: 6px; padding: 6px 8px; border-bottom: 0.5px solid var(--sep); background: var(--card); }
 .day-row.today { background: var(--today); }
 .day-label { text-align: center; line-height: 1.1; padding-top: 4px; }

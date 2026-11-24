@@ -6,6 +6,7 @@ const SETTINGS_KEY = 'cheques.settings.v1';
 
 export const DEFAULT_SETTINGS = {
   userName: '', unit: 'rial', horizonDays: 30, closedWeekdays: [FRIDAY], offsets: [30, 7, 2, 1], lastBackupAt: null,
+  showCashed: false,
 };
 
 export function newLedger(name = 'Pharmacy cheques') {
