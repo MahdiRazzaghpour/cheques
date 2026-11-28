@@ -93,7 +93,7 @@ function chequeRow(k, c, { showAccount = true } = {}) {
     <span class="stripe" style="background:${C.colorOf(account)}"></span>
     <div class="grow"><div dir="auto" style="${c.status === 'cancelled' ? 'text-decoration:line-through' : ''}">${esc(c.recipient || 'No recipient')}</div>
       <div class="sub">${esc(where)}</div>${c.sayadID ? `<div class="sub num">Sayad ${esc(c.sayadID)}</div>` : ''}
-      ${C.sharePart(c) ? `<div class="sub"><bdi>${esc(c.shareName || 'Someone')}</bdi> pays ${esc(k.money(C.sharePart(c)))} · ${c.shareReceived ? '<span class="green">paid in ✓</span>' : '<span class="orange">not paid in yet</span>'}</div>` : ''}</div>
+      ${C.sharePart(c) ? `<div class="sub"><bdi>${esc(c.shareName || 'Someone')}</bdi> pays ${esc(k.money(C.sharePart(c)))} · ${c.shareReceived ? '<span class="green">paid in ✓</span>' : `<span class="orange">${C.shareDueDay(c) ? `cheque on ${esc(C.shareDueDay(c).formattedShort)} · ` : ''}not paid in yet</span>`}</div>` : ''}</div>
     <div style="text-align:right"><div class="num">${esc(k.money(c.amountRials))}</div>
       <div class="sub">${esc(due.formattedShort)} · ${esc(due.relative(k.today))}</div>
       <span class="pill" style="color:${color};background:color-mix(in srgb, ${color} 15%, transparent)">${esc(label)}</span></div></div>`;
@@ -123,13 +123,13 @@ function statusLines(k, s) {
   if ((s.status === 'covered' || s.status === 'coveredForHorizon') && dueSoon && stale) {
     html += '<div class="sub orange">Balance is over 2 days old and a cheque is due soon. Confirm it.</div>';
   }
-  return html + owedLine(k, s.owedInHorizon);
+  return html + owedLine(k, s.owedInHorizon, s.owedDaysInHorizon);
 }
 
-/// "Shadi still owes 200,000,000 IRR of these cheques": shared parts not paid in yet.
-function owedLine(k, owed) {
+/// "Shadi still owes 200,000,000 IRR (cheque on 15 Azar) of these cheques": shared parts not paid in yet.
+function owedLine(k, owed, days) {
   if (!owed || !owed.size) return '';
-  return `<div class="sub orange">${[...owed].map(([name, amount]) => `<bdi>${esc(name)}</bdi> still owes ${esc(k.money(amount))}`).join(' · ')} of these cheques</div>`;
+  return `<div class="sub orange">${[...owed].map(([name, amount]) => `<bdi>${esc(name)}</bdi> still owes ${esc(k.money(amount))}${esc(C.chequeOnText(days?.get(name)))}`).join(' · ')} of these cheques</div>`;
 }
 
 function transferLine(k, amount, by) {
@@ -169,7 +169,7 @@ function remindersSection(k) {
   const list = C.planReminders(k.data, k.today.at(0, 0), { offsets: k.S.offsets }, k.bank, k.unit)
     .filter(r => r.day.key === k.today.key);
   if (!list.length) return '';
-  const rows = list.map(r => `<div class="row stack"><div class="bold ${r.kind === 'confirmBalance' ? 'orange' : 'red'}">${esc(r.title)}</div>
+  const rows = list.map(r => `<div class="row stack"><div class="bold ${r.kind === 'confirmBalance' || r.kind === 'shareCheque' ? 'orange' : 'red'}">${esc(r.title)}</div>
     <div class="sub" style="white-space:pre-line">${esc(r.body)}</div></div>`).join('');
   return group('Reminders today', rows);
 }
@@ -188,7 +188,7 @@ function overview(k) {
     return `<div class="row link stack" role="button" data-act="push" data-route="plan" data-period="${period.kind}:${period.y}:${period.n}">
       <div class="bold">${esc(label)} · ${esc(period.title)}</div>
       <div class="sub">${esc(k.money(p.totalStillToPay))} still to pay${p.totalCashed ? ` · ${esc(k.money(p.totalCashed))} cashed` : ''}</div>
-      ${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd)}</div>`;
+      ${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd, p.owedDaysByEnd)}</div>`;
   };
   html += group('Plan', planRow('This month', month) + planRow('This quarter', quarter));
   html += group('Accounts', k.accounts.map(a => {
@@ -288,12 +288,12 @@ function planView(k, route) {
     <button class="tb-btn" data-act="plan-step" data-step="1">${ICON.right}</button></div>`);
   html += group('', `<div class="row"><div class="grow bold">Still to pay</div><div class="value num">${esc(k.money(p.totalStillToPay))}</div></div>
     ${p.totalCashed ? `<div class="row"><div class="grow">Cashed so far</div><div class="value num">${esc(k.money(p.totalCashed))}</div></div>` : ''}
-    <div class="row stack">${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd)}</div>`,
+    <div class="row stack">${transferLine(k, p.totalTransfer, period.end)}${owedLine(k, p.owedByEnd, p.owedDaysByEnd)}</div>`,
   `Cheques marked Cleared drop out of “still to pay”; keep them, don't delete them. Transfer covers every uncashed cheque due by ${esc(period.end.formatted)}, including earlier ones, per account.`);
   html += group('Accounts', p.rows.map(r => `<div class="row"><span class="stripe" style="background:${C.colorOf(r.account)}"></span>
     <div class="grow"><div class="bold">${esc(C.accountName(r.account))}</div>
     <div class="sub">${r.openCount} to pay · ${esc(k.money(r.stillOpenInPeriod))}${r.cashedInPeriod ? ` · ${esc(k.money(r.cashedInPeriod))} cashed` : ''}</div>
-    ${transferLine(k, r.transferByEnd, period.end)}${owedLine(k, r.owedByEnd)}</div></div>`).join('') || '<div class="row sub">No accounts</div>');
+    ${transferLine(k, r.transferByEnd, period.end)}${owedLine(k, r.owedByEnd, r.owedDaysByEnd)}</div></div>`).join('') || '<div class="row sub">No accounts</div>');
   if (k.L.pharmacies.length) {
     const loose = p.toPayByPharmacy.get(null);
     html += group('Still to pay by pharmacy', k.L.pharmacies.map(ph => `<div class="row"><div class="grow">${esc(ph.name)}</div><div class="value num">${esc(k.money(p.toPayByPharmacy.get(ph.id) || 0))}</div></div>`).join('')
@@ -446,7 +446,7 @@ function chequeModal(k, m) {
     <datalist id="recipients">${recent.map(r => `<option value="${esc(r)}">`).join('')}</datalist>`)
   + group('', amountField('Amount', c?.amountRials ?? null, k.unit) + `<div class="field"><label>Due date</label>${datePicker('due', due)}</div>`,
     `<span id="due-note">${esc(dueNote(k, due))}</span>`)
-  + shareSection(k, c)
+  + shareSection(k, c, due)
   + group('', `<div class="field"><label>Sayad ID</label><input name="sayad" inputmode="numeric" placeholder="16 digits" value="${esc(c?.sayadID || '')}" class="num" data-sayad></div>`,
     `<span id="sayad-note" class="orange"></span>`)
   + (c ? group('', `<div class="field"><label>Status</label><select name="status">${C.STATUSES.map(s => `<option value="${s}" ${s === c.status ? 'selected' : ''}>${C.STATUS_LABEL[s]}</option>`).join('')}</select></div>`,
@@ -457,8 +457,9 @@ function chequeModal(k, m) {
 
 /// A cheque paid together with someone else (e.g. the other pharmacy): the full amount stays on the cheque,
 /// their part is recorded here, and "paid in" adds their money to the account as a deposit.
-function shareSection(k, c) {
+function shareSection(k, c, due) {
   const share = c ? C.sharePart(c) : 0;
+  const shareDue = c ? C.shareDueDay(c) : null;
   const unit = c ? C.editableMoney(c.amountRials, k.unit).unit : k.unit;
   const shareText = share ? String(unit === 'toman' ? share / 10 : share) : '';
   const names = [...new Set([...k.L.cheques.map(x => (x.shareName || '').trim()), ...k.L.pharmacies.map(p => p.name)].filter(Boolean))];
@@ -466,8 +467,10 @@ function shareSection(k, c) {
     <datalist id="share-names">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     <div class="field"><label>Their part</label><input name="shareAmount" inputmode="numeric" class="num" placeholder="0" value="${esc(shareText)}" data-share></div>
     <div class="amount-preview sub num" id="share-preview"></div>
+    <label class="field"><span style="flex:1">They pay with a cheque</span><input type="checkbox" class="toggle" name="shareByCheque" ${shareDue ? 'checked' : ''}></label>
+    <div class="field" id="share-due-row" style="${shareDue ? '' : 'display:none'}"><label>Date on it</label>${datePicker('shareDue', shareDue || due)}</div>
     <label class="field"><span style="flex:1">They have paid it in</span><input type="checkbox" class="toggle" name="shareReceived" ${c?.shareReceived ? 'checked' : ''}></label>`,
-  'For a cheque shared with someone, e.g. Shadi or the other pharmacy. Enter the <b>full cheque</b> as Amount: the account still needs all of it. Their part uses the same unit as Amount. Turn on “paid in” when their money reaches this account; it is added to the balance.');
+  'For a cheque shared with someone, e.g. Shadi or the other pharmacy. Enter the <b>full cheque</b> as Amount: the account still needs all of it. Their part uses the same unit as Amount. If they give you a cheque, enter its date: a reminder shows that day. Turn on “paid in” when their money reaches this account; it is added to the balance.');
 }
 
 function accountModal(k, m) {
@@ -685,8 +688,9 @@ const ACTIONS = {
 };
 
 /// When someone's shared part is paid in, it is a deposit on the cheque's account. Kept in step with the cheque:
-/// added when ticked, updated if the amount or account changes, removed if unticked.
-function syncShareDeposit(L, c) {
+/// added when ticked, updated if the amount or account changes, removed if unticked. `alreadyIn`: a bank balance that
+/// already includes their money; the deposit is dated just before it, so it is recorded but not counted twice.
+function syncShareDeposit(L, c, alreadyIn = null) {
   const existing = c.shareDepositID ? L.entries.find(e => e.id === c.shareDepositID) : null;
   if (!c.shareReceived) {
     if (existing) L.entries = L.entries.filter(e => e.id !== existing.id);
@@ -697,10 +701,23 @@ function syncShareDeposit(L, c) {
   if (existing) {
     Object.assign(existing, fields);
   } else {
-    const entry = { id: uid(), ...fields, enteredAt: nowISO(), enteredBy: store.settings.userName };
+    const enteredAt = alreadyIn ? new Date(Date.parse(alreadyIn.enteredAt) - 1000).toISOString() : nowISO();
+    const entry = { id: uid(), ...fields, enteredAt, enteredBy: store.settings.userName };
     L.entries.push(entry);
     c.shareDepositID = entry.id;
   }
+}
+
+/// "Paid in" switched on after a bank balance entered on or after the date on their cheque: that balance may already
+/// hold their money. Asks, and returns that balance entry if it does.
+function balanceIncludingShare(L, c) {
+  const due = C.shareDueDay(c);
+  const base = L.entries.filter(e => e.accountID === c.accountID && e.kind === 'bankBalance')
+    .sort((a, b) => Date.parse(a.enteredAt) - Date.parse(b.enteredAt)).pop();
+  if (!due || !base) return null;
+  const entered = C.Day.fromDate(new Date(base.enteredAt));
+  if (entered.key < due.key) return null;
+  return confirm(`Does the bank balance you entered on ${entered.formatted} already include ${c.shareName}'s ${C.money(c.shareAmountRials, store.settings.unit)}?\n\nOK: yes, it is already in that balance, so it is not added again.\nCancel: no, add it to the balance now.`) ? base : null;
 }
 
 const SAVE = {
@@ -729,8 +746,9 @@ const SAVE = {
       accountID: f.account.value, pharmacyID: f.pharmacy.value || null, recipient: f.recipient.value.trim(),
       amountRials: amount, due: due.numeric, sayadID: C.sayadDigits(f.sayad.value), note: f.note.value.trim(),
       shareName: share ? shareName : '', shareAmountRials: share || 0, shareReceived: !!share && f.shareReceived.checked,
+      shareDue: share && f.shareByCheque.checked ? readDate(f, 'shareDue').numeric : '',
     });
-    syncShareDeposit(L, c);
+    syncShareDeposit(L, c, c.shareReceived && !c.shareDepositID ? balanceIncludingShare(L, c) : null);
     persistAndRender();
   },
   account(f) {
@@ -836,6 +854,8 @@ document.addEventListener('change', event => {
     if (t.checked) set.add(wd); else set.delete(wd);
     store.settings.closedWeekdays = [...set];
     store.saveSettings();
+  } else if (t.name === 'shareByCheque') {
+    document.getElementById('share-due-row').style.display = t.checked ? '' : 'none';
   } else if (t.dataset.date === 'due') {
     const note = document.getElementById('due-note');
     if (note) note.textContent = dueNote(calc(), readDate(t.form, 'due'));

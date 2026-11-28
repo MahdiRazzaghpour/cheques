@@ -202,6 +202,23 @@ export function owedByName(cheques) {
   }
   return byName;
 }
+
+/// The date on the cheque someone gives for their part, or null (no date entered: a transfer, or not known yet).
+export const shareDueDay = c => (sharePart(c) && c.shareDue ? Day.parse(c.shareDue) : null);
+
+/// Dates of the cheques people give for their unpaid parts, per person, e.g. Map { 'Shadi' => [15 Azar] }.
+export function owedChequeDays(cheques) {
+  const byName = new Map();
+  for (const c of cheques) {
+    const day = shareOwed(c) ? shareDueDay(c) : null;
+    if (!day) continue;
+    const name = (c.shareName || '').trim() || 'Someone';
+    const days = byName.get(name) || [];
+    if (!days.some(d => d.equals(day))) days.push(day);
+    byName.set(name, days.sort((a, b) => a.key - b.key));
+  }
+  return byName;
+}
 export const ENTRY_KINDS = ['bankBalance', 'deposit'];
 export const ENTRY_LABEL = { bankBalance: 'Balance from bank', deposit: 'Deposit' };
 
@@ -287,7 +304,7 @@ export function summarize(account, entries, cheques, today, horizonDays, bank) {
   else if (totalShortfall > 0) status = 'coveredForHorizon';
   return {
     account, balance, outstanding, cover, horizonEnd, shortfallInHorizon, totalShortfall, firstGap,
-    owedInHorizon: owedByName(inHorizon),
+    owedInHorizon: owedByName(inHorizon), owedDaysInHorizon: owedChequeDays(inHorizon),
     outstandingTotal: outstanding.reduce((s, c) => s + c.amountRials, 0),
     overdue: outstanding.filter(c => c.status === 'bounced' || Day.parse(c.due).key < today.key),
     transferBy: firstGap ? transferDeadline(Day.parse(firstGap.due), today, bank) : null,
@@ -345,6 +362,19 @@ export function planReminders(accountsData, now, settings, bank, unit) {
     for (const { day, kinds } of buckets.values()) {
       reminders.push(makeReminder(account, day, kinds, byId, cover, balance, s, bank, unit));
     }
+    // Someone's cheque for their part: from its date, every day until "paid in" is on. Also after the shared cheque
+    // itself is cashed, since their money still has to reach the account.
+    for (const c of cheques) {
+      const due = shareDueDay(c);
+      if (!due || c.shareReceived || c.status === 'cancelled') continue;
+      let day = due.key > today.key ? due : today;
+      for (let added = 0; added < s.overdueRepeatDays; day = day.addDays(1)) {
+        const fire = day.at(s.hour, s.minute);
+        if (fire <= now) continue;
+        reminders.push(shareChequeReminder(account, day, fire, c, due, unit));
+        added++;
+      }
+    }
   }
   return reminders.sort((a, b) => (a.fireDate - b.fireDate) || (a.id < b.id ? -1 : 1));
 }
@@ -362,7 +392,8 @@ function makeReminder(account, day, kinds, byId, cover, balance, s, bank, unit) 
   if (overdue.length) lines.push(`${overdue.every(c => c.status === 'bounced') ? 'Bounced' : 'Past due'}: ${describe(overdue, unit)}.`);
   if (upcoming.length) lines.push(`Due ${dueRange(upcoming)}: ${describe(upcoming, unit)}.`);
   const owed = owedByName(items.map(i => i.cheque));
-  if (owed.size) lines.push(`Of this, ${[...owed].map(([name, amount]) => `⁨${name}⁩ still owes ${money(amount, unit)}`).join(' and ')}.`);
+  const owedDays = owedChequeDays(items.map(i => i.cheque));
+  if (owed.size) lines.push(`Of this, ${[...owed].map(([name, amount]) => `⁨${name}⁩ still owes ${money(amount, unit)}${chequeOnText(owedDays.get(name))}`).join(' and ')}.`);
   let title;
   if (shortfall > 0) {
     const amount = money(shortfall, unit);
@@ -380,6 +411,20 @@ function makeReminder(account, day, kinds, byId, cover, balance, s, bank, unit) 
     title = `${accountName(account)} — confirm balance`;
   }
   return { id: `${account.id}.${day.key}`, accountID: account.id, day, fireDate: fire, kind, chequeIDs: items.map(i => i.cheque.id), title, body: lines.join('\n') };
+}
+
+/// " (cheque on 15 Azar)", or nothing when no date was entered.
+export const chequeOnText = days => (days && days.length ? ` (cheque on ${days.map(d => d.formattedShort).join(', ')})` : '');
+
+function shareChequeReminder(account, day, fire, c, due, unit) {
+  const name = (c.shareName || '').trim() || 'Someone';
+  const what = c.recipient ? `the cheque to ⁨${c.recipient}⁩` : 'the shared cheque';
+  return {
+    id: `${account.id}.${day.key}.share.${c.id}`, accountID: account.id, day, fireDate: fire, kind: 'shareCheque', chequeIDs: [c.id],
+    title: `${accountName(account)} — ⁨${name}⁩'s cheque`,
+    body: `⁨${name}⁩'s cheque for ${money(sharePart(c), unit)} is dated ${due.formattedShort}: their part of ${what}.\n`
+      + `Deposit it into this account. When the money is in, open ${what} and turn on “They have paid it in”.`,
+  };
 }
 
 function describe(cheques, unit) {
@@ -436,6 +481,7 @@ export function periodPlan(period, accountsData, pharmacies = []) {
   const addTo = (id, amount) => toPayByPharmacy.set(id || null, (toPayByPharmacy.get(id || null) || 0) + amount);
   const pharmacyByName = new Map(pharmacies.map(p => [(p.name || '').trim().toLowerCase(), p.id]));
   const owedByEnd = new Map();
+  const allDueByEnd = [];
   const rows = accountsData.map(({ account, entries, cheques }) => {
     const balance = balanceOf(entries, cheques);
     const inPeriod = cheques.filter(c => c.status !== 'cancelled' && period.contains(Day.parse(c.due)));
@@ -448,6 +494,7 @@ export function periodPlan(period, accountsData, pharmacies = []) {
     const dueByEnd = cheques.filter(c => isOutstanding(c.status) && Day.parse(c.due).key <= period.end.key);
     const required = dueByEnd.reduce((s, c) => s + c.amountRials, 0);
     for (const [name, amount] of owedByName(dueByEnd)) owedByEnd.set(name, (owedByEnd.get(name) || 0) + amount);
+    allDueByEnd.push(...dueByEnd);
     const sumOf = list => list.reduce((s, c) => s + c.amountRials, 0);
     return {
       account, chequeCount: inPeriod.length,
@@ -455,7 +502,7 @@ export function periodPlan(period, accountsData, pharmacies = []) {
       stillOpenInPeriod: sumOf(inPeriod.filter(c => isOutstanding(c.status))),
       openCount: inPeriod.filter(c => isOutstanding(c.status)).length,
       cashedInPeriod: sumOf(inPeriod.filter(c => c.status === 'cleared')),
-      owedByEnd: owedByName(dueByEnd),
+      owedByEnd: owedByName(dueByEnd), owedDaysByEnd: owedChequeDays(dueByEnd),
       requiredByEnd: required, available: balance.available,
       transferByEnd: Math.max(0, required - balance.available),
     };
@@ -463,7 +510,7 @@ export function periodPlan(period, accountsData, pharmacies = []) {
   const sum = key => rows.reduce((s, r) => s + r[key], 0);
   // Per-account shortfalls added up: spare money in one account does not pay another account's cheques.
   return {
-    period, rows, toPayByPharmacy, owedByEnd,
+    period, rows, toPayByPharmacy, owedByEnd, owedDaysByEnd: owedChequeDays(allDueByEnd),
     totalDue: sum('dueInPeriod'), totalStillToPay: sum('stillOpenInPeriod'), totalCashed: sum('cashedInPeriod'),
     totalRequired: sum('requiredByEnd'), totalTransfer: sum('transferByEnd'),
   };
@@ -554,6 +601,7 @@ export function validateBackup(data) {
       && (!Number.isSafeInteger(c.shareAmountRials) || c.shareAmountRials < 0 || c.shareAmountRials >= c.amountRials)) {
       fail(`a cheque to ${c.recipient} has a shared part that is not less than the cheque`);
     }
+    if (c.shareDue && !Day.parse(c.shareDue)) fail(`a cheque to ${c.recipient} has an impossible date for the shared part ${c.shareDue}`);
   }
   for (const e of data.entries) {
     if (!accountIDs.has(e.accountID)) fail('a balance entry points at a missing account');
