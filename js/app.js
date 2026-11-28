@@ -877,4 +877,7 @@ async function restoreFrom(file) {
 }
 
 navigator.storage?.persist?.();
+// A new version took over in the background: show it now, unless a form is open (then it shows on the next open).
+const hadWorker = !!navigator.serviceWorker?.controller;
+navigator.serviceWorker?.addEventListener('controllerchange', () => { if (hadWorker && !state.modal) location.reload(); });
 render();
